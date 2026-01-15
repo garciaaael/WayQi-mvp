@@ -1,0 +1,1002 @@
+import React, { useMemo, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import {
+  Upload,
+  Bot,
+  Target,
+  Wallet,
+  TrendingUp,
+  ShieldCheck,
+  Sparkles,
+  MessageSquare,
+  FileText,
+} from "lucide-react";
+
+/**
+ * WayQi – App.jsx (Prototipo web MVP)
+ * Incluye:
+ * - Landing + Simulador rápido
+ * - App: Objetivo (Auto/Viajes) + simulación (ARS 40% anual estimado / USD 10% anual estimado)
+ * - Boost WayQi (capital temporal no retirable) para Viajes
+ * - Gastos tipo WhatsApp + carga PDF (placeholder)
+ * - Centro IA (Router + Agentes: Auto/Viajes/Finanzas) con respuestas stub
+ *
+ * Nota: esto es UI/UX. No persiste datos ni integra WhatsApp/API.
+ */
+
+function formatCurrency(n, currency) {
+  try {
+    return new Intl.NumberFormat("es-AR", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: currency === "ARS" ? 0 : 2,
+    }).format(n);
+  } catch {
+    return `${currency} ${Number(n || 0).toFixed(currency === "ARS" ? 0 : 2)}`;
+  }
+}
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function monthsToReachGoal({
+  target,
+  initial,
+  monthly,
+  annualRate, // 0.40, 0.10
+  boostVirtual, // non-withdrawable, increases interest base
+  maxMonths = 240,
+}) {
+  const r = Math.pow(1 + annualRate, 1 / 12) - 1; // monthly effective
+  let balance = Math.max(0, Number(initial) || 0);
+  let months = 0;
+
+  // Edge cases
+  if (target <= 0) return { months: 0, endingBalance: balance, timeline: [balance] };
+  if (balance >= target) return { months: 0, endingBalance: balance, timeline: [balance] };
+  if ((Number(monthly) || 0) <= 0 && annualRate <= 0)
+    return { months: Infinity, endingBalance: balance, timeline: [balance] };
+
+  const timeline = [balance];
+
+  while (months < maxMonths && balance < target) {
+    const interest = (balance + Math.max(0, Number(boostVirtual) || 0)) * r;
+    balance = balance + interest + Math.max(0, Number(monthly) || 0);
+    months += 1;
+    timeline.push(balance);
+  }
+
+  return { months: balance >= target ? months : Infinity, endingBalance: balance, timeline };
+}
+
+const DEFAULTS = {
+  rates: {
+    ARS: 0.4,
+    USD: 0.1, // ✅ ajustado a 10% anual estimado
+  },
+};
+
+export default function App() {
+  const [route, setRoute] = useState("landing"); // landing | app
+  const [segment, setSegment] = useState("auto"); // auto | viajes
+
+  // Onboarding / Goal
+  const [currency, setCurrency] = useState("ARS"); // ARS | USD
+  const [goalName, setGoalName] = useState("Mi 0km");
+  const [target, setTarget] = useState(25000000);
+  const [initial, setInitial] = useState(500000);
+  const [monthly, setMonthly] = useState(350000);
+
+  // Boosts
+  const [boostEnabled, setBoostEnabled] = useState(true);
+  const [boostVirtual, setBoostVirtual] = useState(0);
+
+  // AI Center
+  const [aiAgent, setAiAgent] = useState("router"); // router | auto | viajes | finanzas
+  const [aiInput, setAiInput] = useState("");
+  const [aiLog, setAiLog] = useState([
+    {
+      role: "assistant",
+      text: "Soy el Router de WayQi. Contame tu objetivo (auto o viaje), moneda (ARS/USD), cuánto podés aportar por mes y si querés optimizar gastos con tu resumen de tarjeta.",
+    },
+  ]);
+
+  // Expenses capture
+  const [expenseText, setExpenseText] = useState("");
+  const [expenseItems, setExpenseItems] = useState([
+    { label: "Café", amount: 2200, category: "Gastos hormiga" },
+    { label: "Delivery", amount: 9800, category: "Variable" },
+  ]);
+  const [pdfName, setPdfName] = useState("");
+
+  const annualRate = currency === "ARS" ? DEFAULTS.rates.ARS : DEFAULTS.rates.USD;
+
+  const sim = useMemo(() => {
+    const boost = boostEnabled ? boostVirtual : 0;
+    return monthsToReachGoal({
+      target: Number(target) || 0,
+      initial: Number(initial) || 0,
+      monthly: Number(monthly) || 0,
+      annualRate,
+      boostVirtual: boost,
+      maxMonths: segment === "auto" ? 240 : 60,
+    });
+  }, [target, initial, monthly, annualRate, boostVirtual, boostEnabled, segment]);
+
+  const progress = useMemo(() => {
+    const p = ((Number(initial) || 0) / Math.max(1, Number(target) || 1)) * 100;
+    return clamp(p, 0, 100);
+  }, [initial, target]);
+
+  const etaLabel = useMemo(() => {
+    if (!isFinite(sim.months)) return "Sin ETA (ajustá aporte o escenario)";
+    if (sim.months === 0) return "Objetivo alcanzado";
+    const years = Math.floor(sim.months / 12);
+    const months = sim.months % 12;
+    const parts = [];
+    if (years) parts.push(`${years} año${years > 1 ? "s" : ""}`);
+    if (months) parts.push(`${months} mes${months > 1 ? "es" : ""}`);
+    return parts.join(" ");
+  }, [sim.months]);
+
+  function pushAI(role, text) {
+    setAiLog((prev) => [...prev, { role, text }]);
+  }
+
+  function routeAI(input) {
+    const t = input.toLowerCase();
+    if (t.includes("auto") || t.includes("0km") || t.includes("patent") || t.includes("acarreo")) return "auto";
+    if (t.includes("viaje") || t.includes("pasaje") || t.includes("hotel") || t.includes("vacacion")) return "viajes";
+    if (
+      t.includes("presupuesto") ||
+      t.includes("gastos") ||
+      t.includes("tarjeta") ||
+      t.includes("hormiga") ||
+      t.includes("ahorro")
+    )
+      return "finanzas";
+    return "router";
+  }
+
+  function answerStub(agent, input) {
+    const rateText = currency === "ARS" ? "40% anual estimado en ARS" : "10% anual estimado en USD";
+
+    if (agent === "auto") {
+      return `Para objetivo Auto: definí tu monto meta incluyendo patentamiento y costos asociados. Con ${rateText} y un aporte mensual de ${formatCurrency(
+        Number(monthly) || 0,
+        currency
+      )}, tu ETA estimada es ${etaLabel}. Para acelerar, la palanca #1 suele ser recortar 2–3 categorías de gasto y automatizar aportes.`;
+    }
+    if (agent === "viajes") {
+      return `Para Viajes: el horizonte es corto, así que gana disciplina + aportes. Con ${rateText} y aporte mensual ${formatCurrency(
+        Number(monthly) || 0,
+        currency
+      )}, ETA ${etaLabel}. El boost WayQi (no retirable) funciona como incentivo: mejora la base sobre la que se calcula interés, sin endeudarte.`;
+    }
+    if (agent === "finanzas") {
+      const total = expenseItems.reduce((s, x) => s + (Number.isFinite(x.amount) ? x.amount : 0), 0);
+      const hormiga = expenseItems
+        .filter((x) => String(x.category || "").toLowerCase().includes("hormiga"))
+        .reduce((s, x) => s + (Number.isFinite(x.amount) ? x.amount : 0), 0);
+      const suggestion = Math.max(0, Math.round(hormiga * 0.6));
+
+      return `Patrón detectado (demo): gastos hormiga ≈ ${formatCurrency(hormiga, "ARS")} (total ejemplo: ${formatCurrency(
+        total,
+        "ARS"
+      )}). Si convertís ~60% de hormiga en ahorro automático (~${formatCurrency(
+        suggestion,
+        "ARS"
+      )}/mes), el tiempo a objetivo baja de forma material. Si subís tu resumen PDF, te armo un plan de recorte por categorías.`;
+    }
+
+    return `Entendido. Para derivarte bien: ¿tu objetivo es Auto o Viaje? ¿Moneda (ARS/USD)? ¿Aporte mensual estimado? Si querés optimizar costos, pegá consumos o subí el PDF.`;
+  }
+
+  function handleAskAI() {
+    const input = aiInput.trim();
+    if (!input) return;
+
+    pushAI("user", input);
+
+    let nextAgent = aiAgent;
+    if (aiAgent === "router") {
+      nextAgent = routeAI(input);
+      setAiAgent(nextAgent);
+    }
+
+    const reply = answerStub(nextAgent, input);
+    pushAI("assistant", reply);
+    setAiInput("");
+  }
+
+  function addExpenseFromText() {
+    const raw = expenseText.trim();
+    if (!raw) return;
+
+    // naive parse: "categoria, concepto, monto"
+    const parts = raw.split(",").map((p) => p.trim());
+    const last = parts[parts.length - 1] || "";
+    const amount = Number(String(last).replace(/[^0-9.]/g, ""));
+    const label = parts.length >= 2 ? parts[parts.length - 2] : raw;
+    const category = parts.length >= 3 ? parts[0] : "Variable";
+
+    if (!Number.isFinite(amount)) return;
+
+    setExpenseItems((prev) => [{ label, amount, category }, ...prev]);
+    setExpenseText("");
+  }
+
+  function resetForSegment(next) {
+    setSegment(next);
+
+    if (next === "auto") {
+      setGoalName("Mi 0km");
+      setCurrency("ARS");
+      setTarget(25000000);
+      setInitial(500000);
+      setMonthly(350000);
+
+      // Para Auto, boost bancario es fase 2: apagado en MVP
+      setBoostEnabled(false);
+      setBoostVirtual(0);
+    } else {
+      setGoalName("Mi viaje");
+      setCurrency("USD");
+      setTarget(2500);
+      setInitial(200);
+      setMonthly(200);
+
+      // Para Viajes, boost WayQi (no retirable)
+      setBoostEnabled(true);
+      setBoostVirtual(800);
+    }
+  }
+
+  // ---------------- LANDING ----------------
+  if (route === "landing") {
+    return (
+      <div className="min-h-screen bg-background">
+        <header className="sticky top-0 z-20 border-b bg-background/70 backdrop-blur">
+          <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2">
+              <div className="h-9 w-9 rounded-2xl border flex items-center justify-center shadow-sm">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="text-sm font-semibold">WayQi</div>
+                <div className="text-xs text-muted-foreground">Ahorro por objetivos + IA</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary" className="rounded-xl">
+                MVP
+              </Badge>
+              <Button className="rounded-2xl" onClick={() => setRoute("app")}>
+                Entrar al prototipo
+              </Button>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto max-w-6xl px-4 py-10">
+          <div className="grid gap-6 md:grid-cols-2 md:items-center">
+            <div className="space-y-5">
+              <Badge className="rounded-xl" variant="outline">
+                Interés compuesto + disciplina + incentivos
+              </Badge>
+
+              <h1 className="text-3xl md:text-5xl font-semibold tracking-tight">
+                Llegar a tu objetivo sin sobrecostos, con transparencia.
+              </h1>
+
+              <p className="text-muted-foreground text-base md:text-lg">
+                WayQi convierte hábitos de consumo en ahorro automático, proyecta escenarios con interés compuesto y te acompaña con agentes de IA.
+                Para <span className="font-medium">Auto</span> (horizonte largo) y <span className="font-medium">Viajes</span> (horizonte corto).
+              </p>
+
+              <div className="flex flex-wrap gap-2">
+                <Card className="rounded-3xl shadow-sm w-full">
+                  <CardContent className="p-4 flex items-start gap-3">
+                    <Target className="h-5 w-5 mt-0.5" />
+                    <div>
+                      <div className="font-medium">Objetivos claros</div>
+                      <div className="text-sm text-muted-foreground">Meta, aporte mensual, ETA y progreso.</div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-3xl shadow-sm w-full">
+                  <CardContent className="p-4 flex items-start gap-3">
+                    <Bot className="h-5 w-5 mt-0.5" />
+                    <div>
+                      <div className="font-medium">IA como copiloto</div>
+                      <div className="text-sm text-muted-foreground">Router + agentes (Auto / Viajes / Finanzas).</div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-3xl shadow-sm w-full">
+                  <CardContent className="p-4 flex items-start gap-3">
+                    <ShieldCheck className="h-5 w-5 mt-0.5" />
+                    <div>
+                      <div className="font-medium">Compliance-first</div>
+                      <div className="text-sm text-muted-foreground">Escenarios estimados, sin promesas ni letra chica.</div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button className="rounded-2xl" onClick={() => setRoute("app")}>
+                  Probar onboarding
+                </Button>
+                <Button
+                  variant="outline"
+                  className="rounded-2xl"
+                  onClick={() => {
+                    setRoute("app");
+                  }}
+                >
+                  Ver dashboard
+                </Button>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                * Rendimientos mostrados como simulación: ARS 40% anual estimado / USD 10% anual estimado. No garantizado.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <Card className="rounded-3xl shadow-sm">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <TrendingUp className="h-5 w-5" />
+                    Simulador rápido
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label>Tipo</Label>
+                      <Select
+                        value={segment}
+                        onValueChange={(v) => {
+                          resetForSegment(v);
+                        }}
+                      >
+                        <SelectTrigger className="rounded-2xl">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">Auto</SelectItem>
+                          <SelectItem value="viajes">Viajes</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label>Moneda</Label>
+                      <Select value={currency} onValueChange={(v) => setCurrency(v)}>
+                        <SelectTrigger className="rounded-2xl">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ARS">ARS</SelectItem>
+                          <SelectItem value="USD">USD</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label>Objetivo</Label>
+                      <Input className="rounded-2xl" value={target} onChange={(e) => setTarget(Number(e.target.value))} />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label>Aporte mensual</Label>
+                      <Input className="rounded-2xl" value={monthly} onChange={(e) => setMonthly(Number(e.target.value))} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm text-muted-foreground">ETA estimada</div>
+                      <Badge className="rounded-xl" variant="secondary">
+                        {etaLabel}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 text-sm text-muted-foreground">
+                      Escenario: {currency === "ARS" ? "40%" : "10%"} anual estimado · Aportes automáticos recomendados.
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button className="rounded-2xl" onClick={() => setRoute("app")}>
+                      Abrir prototipo completo
+                    </Button>
+                    <Button variant="outline" className="rounded-2xl" onClick={() => resetForSegment("viajes")}>
+                      Demo Viajes
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-3xl shadow-sm">
+                <CardContent className="p-4 text-sm text-muted-foreground">
+                  <span className="font-medium text-foreground">Idea fuerza:</span> WayQi no compite por tasa. Compite por convertir gasto invisible en capital futuro.
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ---------------- APP ----------------
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="sticky top-0 z-20 border-b bg-background/70 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <div className="h-9 w-9 rounded-2xl border flex items-center justify-center shadow-sm">
+              <Sparkles className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold">WayQi</div>
+              <div className="text-xs text-muted-foreground">Prototipo MVP</div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="rounded-xl">
+              {segment === "auto" ? "Auto" : "Viajes"}
+            </Badge>
+            <Button variant="outline" className="rounded-2xl" onClick={() => setRoute("landing")}>
+              Volver
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-8">
+        <div className="grid gap-6 lg:grid-cols-3">
+          {/* Left column: Objective */}
+          <div className="lg:col-span-1 space-y-6">
+            <Card className="rounded-3xl shadow-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Target className="h-5 w-5" /> Objetivo
+                </CardTitle>
+              </CardHeader>
+
+              <CardContent className="space-y-4">
+                <div className="grid gap-3">
+                  <div className="space-y-1">
+                    <Label>Segmento</Label>
+                    <Select value={segment} onValueChange={(v) => resetForSegment(v)}>
+                      <SelectTrigger className="rounded-2xl">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto</SelectItem>
+                        <SelectItem value="viajes">Viajes</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>Nombre del objetivo</Label>
+                    <Input className="rounded-2xl" value={goalName} onChange={(e) => setGoalName(e.target.value)} />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label>Moneda</Label>
+                      <Select value={currency} onValueChange={(v) => setCurrency(v)}>
+                        <SelectTrigger className="rounded-2xl">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ARS">ARS</SelectItem>
+                          <SelectItem value="USD">USD</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label>Tasa (escenario)</Label>
+                      <Input className="rounded-2xl" value={`${Math.round(annualRate * 100)}% anual`} readOnly />
+                      <div className="text-[11px] text-muted-foreground">Estimado, no garantizado.</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>Monto objetivo</Label>
+                    <Input className="rounded-2xl" value={target} onChange={(e) => setTarget(Number(e.target.value))} />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label>Inicial</Label>
+                      <Input className="rounded-2xl" value={initial} onChange={(e) => setInitial(Number(e.target.value))} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Aporte mensual</Label>
+                      <Input className="rounded-2xl" value={monthly} onChange={(e) => setMonthly(Number(e.target.value))} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm text-muted-foreground">Progreso inicial</div>
+                      <div className="text-sm font-medium">{progress.toFixed(1)}%</div>
+                    </div>
+                    <div className="mt-2">
+                      <Progress value={progress} />
+                    </div>
+                    <div className="mt-3 flex items-center justify-between">
+                      <div className="text-sm text-muted-foreground">ETA</div>
+                      <Badge className="rounded-xl" variant="secondary">
+                        {etaLabel}
+                      </Badge>
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      <Wallet className="h-4 w-4" /> Boost
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch checked={boostEnabled} onCheckedChange={setBoostEnabled} />
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-muted-foreground">
+                    {segment === "viajes"
+                      ? "Boost WayQi: capital temporal no retirable. Aumenta la base de cálculo del interés como incentivo."
+                      : "Para Auto, el boost bancario se define en fase 2 (alianzas). En MVP puede quedar desactivado."}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label>Monto boost</Label>
+                      <Input
+                        className="rounded-2xl"
+                        value={boostVirtual}
+                        onChange={(e) => setBoostVirtual(Number(e.target.value))}
+                        disabled={!boostEnabled}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Estado</Label>
+                      <Input className="rounded-2xl" readOnly value={boostEnabled ? "Activo" : "Inactivo"} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button className="rounded-2xl" onClick={() => resetForSegment(segment)}>
+                    Recalcular
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="rounded-2xl"
+                    onClick={() => {
+                      setAiAgent("router");
+                      pushAI("assistant", "Listo. ¿Querés que enfoquemos Auto, Viajes u optimización de gastos?");
+                    }}
+                  >
+                    Abrir IA Router
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-3xl shadow-sm">
+              <CardContent className="p-4 text-xs text-muted-foreground">
+                * Este prototipo muestra escenarios. No constituye oferta, promesa de rendimiento ni asesoramiento financiero.
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Right columns: Dashboard */}
+          <div className="lg:col-span-2 space-y-6">
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card className="rounded-3xl shadow-sm">
+                <CardContent className="p-4">
+                  <div className="text-xs text-muted-foreground">Objetivo</div>
+                  <div className="mt-1 text-lg font-semibold">{goalName}</div>
+                  <div className="mt-2 text-sm text-muted-foreground">Meta: {formatCurrency(Number(target) || 0, currency)}</div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-3xl shadow-sm">
+                <CardContent className="p-4">
+                  <div className="text-xs text-muted-foreground">Aporte mensual</div>
+                  <div className="mt-1 text-lg font-semibold">{formatCurrency(Number(monthly) || 0, currency)}</div>
+                  <div className="mt-2 text-sm text-muted-foreground">Inicial: {formatCurrency(Number(initial) || 0, currency)}</div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-3xl shadow-sm">
+                <CardContent className="p-4">
+                  <div className="text-xs text-muted-foreground">ETA</div>
+                  <div className="mt-1 text-lg font-semibold">{etaLabel}</div>
+                  <div className="mt-2 text-sm text-muted-foreground">Escenario: {Math.round(annualRate * 100)}% anual</div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Tabs defaultValue="plan">
+              <TabsList className="rounded-2xl">
+                <TabsTrigger value="plan" className="rounded-2xl">
+                  Plan
+                </TabsTrigger>
+                <TabsTrigger value="gastos" className="rounded-2xl">
+                  Gastos & PDF
+                </TabsTrigger>
+                <TabsTrigger value="ia" className="rounded-2xl">
+                  Centro IA
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="plan" className="mt-4 space-y-4">
+                <Card className="rounded-3xl shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <TrendingUp className="h-5 w-5" /> Simulación
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="rounded-3xl border p-4">
+                        <div className="text-xs text-muted-foreground">En 12 meses</div>
+                        <div className="mt-1 text-base font-semibold">
+                          {formatCurrency(sim.timeline[Math.min(12, sim.timeline.length - 1)] ?? Number(initial) || 0, currency)}
+                        </div>
+                      </div>
+
+                      <div className="rounded-3xl border p-4">
+                        <div className="text-xs text-muted-foreground">En 24 meses</div>
+                        <div className="mt-1 text-base font-semibold">
+                          {formatCurrency(sim.timeline[Math.min(24, sim.timeline.length - 1)] ?? Number(initial) || 0, currency)}
+                        </div>
+                      </div>
+
+                      <div className="rounded-3xl border p-4">
+                        <div className="text-xs text-muted-foreground">Balance final (sim)</div>
+                        <div className="mt-1 text-base font-semibold">{formatCurrency(sim.endingBalance, currency)}</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl border p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium">Palancas rápidas</div>
+                        <Badge className="rounded-xl" variant="secondary">
+                          impacto alto
+                        </Badge>
+                      </div>
+
+                      <ul className="mt-3 space-y-2 text-sm text-muted-foreground list-disc pl-5">
+                        <li>Automatizar aportes el día de cobro (reduce fricción y mejora continuidad).</li>
+                        <li>Recortar 2 categorías de gasto (gastos hormiga + variable) y convertirlo en ahorro.</li>
+                        <li>Para Auto: separar “costos ocultos” (patentamiento, flete, seguro) en una sub-meta.</li>
+                      </ul>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        className="rounded-2xl"
+                        onClick={() => {
+                          const next = segment === "auto" ? "auto" : "viajes";
+                          setAiAgent(next);
+                          pushAI("assistant", answerStub(next, ""));
+                        }}
+                      >
+                        Pedir plan a IA
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        className="rounded-2xl"
+                        onClick={() => {
+                          setAiAgent("finanzas");
+                          pushAI("assistant", answerStub("finanzas", ""));
+                        }}
+                      >
+                        Detectar fugas de gasto
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="gastos" className="mt-4 space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Card className="rounded-3xl shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <MessageSquare className="h-5 w-5" /> Tracking tipo WhatsApp
+                      </CardTitle>
+                    </CardHeader>
+
+                    <CardContent className="space-y-3">
+                      <div className="text-sm text-muted-foreground">
+                        Pegá una línea: <span className="font-medium text-foreground">Categoría, Concepto, Monto</span>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <Input
+                          className="rounded-2xl"
+                          value={expenseText}
+                          onChange={(e) => setExpenseText(e.target.value)}
+                          placeholder="Gastos hormiga, Café, 2200"
+                        />
+                        <Button className="rounded-2xl" onClick={addExpenseFromText}>
+                          Agregar
+                        </Button>
+                      </div>
+
+                      <div className="rounded-3xl border p-3 max-h-56 overflow-auto">
+                        <div className="text-xs text-muted-foreground mb-2">Últimos consumos</div>
+                        <div className="space-y-2">
+                          {expenseItems.map((x, idx) => (
+                            <div key={idx} className="flex items-center justify-between text-sm">
+                              <div>
+                                <div className="font-medium">{x.label}</div>
+                                <div className="text-xs text-muted-foreground">{x.category}</div>
+                              </div>
+                              <div className="font-semibold">{formatCurrency(x.amount, "ARS")}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <Button
+                        variant="outline"
+                        className="rounded-2xl"
+                        onClick={() => {
+                          setAiAgent("finanzas");
+                          pushAI("assistant", answerStub("finanzas", ""));
+                        }}
+                      >
+                        Analizar gastos
+                      </Button>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-3xl shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <FileText className="h-5 w-5" /> Resumen de tarjeta (PDF)
+                      </CardTitle>
+                    </CardHeader>
+
+                    <CardContent className="space-y-3">
+                      <div className="text-sm text-muted-foreground">
+                        MVP: carga el PDF para categorizar y detectar patrones. En este prototipo solo se simula la carga.
+                      </div>
+
+                      <label className="block">
+                        <div className="rounded-3xl border p-4 flex items-center justify-between cursor-pointer">
+                          <div className="flex items-center gap-3">
+                            <Upload className="h-5 w-5" />
+                            <div>
+                              <div className="font-medium">Subir PDF</div>
+                              <div className="text-xs text-muted-foreground">Resumen de tarjeta / consumos</div>
+                            </div>
+                          </div>
+                          <Badge className="rounded-xl" variant={pdfName ? "secondary" : "outline"}>
+                            {pdfName ? "Cargado" : "Pendiente"}
+                          </Badge>
+                        </div>
+
+                        <input
+                          type="file"
+                          accept="application/pdf"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) setPdfName(f.name);
+                          }}
+                        />
+                      </label>
+
+                      <div className="rounded-3xl border p-4">
+                        <div className="text-xs text-muted-foreground">Archivo</div>
+                        <div className="mt-1 text-sm font-medium">{pdfName || "—"}</div>
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Integración real: extracción de movimientos + categorización + recomendaciones + impacto en ETA.
+                        </div>
+                      </div>
+
+                      <Button
+                        className="rounded-2xl"
+                        onClick={() => {
+                          setAiAgent("finanzas");
+                          pushAI(
+                            "assistant",
+                            "Perfecto. Con tu resumen de tarjeta puedo proponerte 3 recortes prioritarios y convertirlos en ahorro automático."
+                          );
+                        }}
+                      >
+                        Generar plan de recorte
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="ia" className="mt-4 space-y-4">
+                <Card className="rounded-3xl shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Bot className="h-5 w-5" /> Centro de IA
+                    </CardTitle>
+                  </CardHeader>
+
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge className="rounded-xl" variant="secondary">
+                        Agente activo: {aiAgent}
+                      </Badge>
+
+                      <div className="flex gap-2 flex-wrap">
+                        <Button
+                          size="sm"
+                          variant={aiAgent === "router" ? "default" : "outline"}
+                          className="rounded-2xl"
+                          onClick={() => setAiAgent("router")}
+                        >
+                          Router
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={aiAgent === "auto" ? "default" : "outline"}
+                          className="rounded-2xl"
+                          onClick={() => setAiAgent("auto")}
+                        >
+                          Auto
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={aiAgent === "viajes" ? "default" : "outline"}
+                          className="rounded-2xl"
+                          onClick={() => setAiAgent("viajes")}
+                        >
+                          Viajes
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={aiAgent === "finanzas" ? "default" : "outline"}
+                          className="rounded-2xl"
+                          onClick={() => setAiAgent("finanzas")}
+                        >
+                          Finanzas
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl border p-3 h-72 overflow-auto">
+                      <div className="space-y-3">
+                        {aiLog.map((m, idx) => (
+                          <div key={idx} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                            <div
+                              className={`max-w-[85%] rounded-3xl px-4 py-2 text-sm shadow-sm border ${
+                                m.role === "user" ? "bg-muted" : "bg-background"
+                              }`}
+                            >
+                              <div className="text-xs text-muted-foreground mb-1">{m.role === "user" ? "Usted" : "WayQi IA"}</div>
+                              <div className="whitespace-pre-wrap">{m.text}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2">
+                      <Textarea
+                        className="rounded-3xl"
+                        value={aiInput}
+                        onChange={(e) => setAiInput(e.target.value)}
+                        placeholder="Escriba: 'Quiero un auto en 36 meses' o 'Quiero recortar gastos hormiga'..."
+                      />
+
+                      <div className="flex gap-2 flex-wrap">
+                        <Button className="rounded-2xl" onClick={handleAskAI}>
+                          Enviar
+                        </Button>
+
+                        <Button
+                          variant="outline"
+                          className="rounded-2xl"
+                          onClick={() => {
+                            setAiLog([
+                              {
+                                role: "assistant",
+                                text: "Soy el Router de WayQi. Contame tu objetivo (auto o viaje), moneda (ARS/USD), cuánto podés aportar por mes y si querés optimizar gastos con tu resumen de tarjeta.",
+                              },
+                            ]);
+                            setAiAgent("router");
+                          }}
+                        >
+                          Reiniciar chat
+                        </Button>
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="rounded-3xl border p-4">
+                      <div className="text-sm font-medium">Atajos (demo)</div>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          className="rounded-2xl"
+                          onClick={() => {
+                            pushAI("user", "Quiero un 0km sin plan de ahorro. ¿Cómo llego más rápido?");
+                            setAiAgent("auto");
+                            pushAI("assistant", answerStub("auto", ""));
+                          }}
+                        >
+                          Auto: plan rápido
+                        </Button>
+
+                        <Button
+                          variant="outline"
+                          className="rounded-2xl"
+                          onClick={() => {
+                            pushAI("user", "Quiero viajar en 6 meses. ¿Cómo acelero sin endeudarme?");
+                            setAiAgent("viajes");
+                            pushAI("assistant", answerStub("viajes", ""));
+                          }}
+                        >
+                          Viajes: acelerar
+                        </Button>
+
+                        <Button
+                          variant="outline"
+                          className="rounded-2xl"
+                          onClick={() => {
+                            pushAI("user", "Quiero achicar gastos hormiga y convertirlos en ahorro");
+                            setAiAgent("finanzas");
+                            pushAI("assistant", answerStub("finanzas", ""));
+                          }}
+                        >
+                          Finanzas: recortes
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
